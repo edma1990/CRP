@@ -1,0 +1,993 @@
+const PRICE_PER_LITER = 1300000; // ریال
+const STORAGE = "lynxoil_crm_v2";
+const SETTLE_DAYS = 10;
+
+const ROLES = {
+  station: "جایگاه‌دار",
+  sales: "کارشناس فروش",
+  accounting: "مدیر مالی",
+  salesManager: "مدیر فروش",
+  commerce: "مدیر بازرگانی",
+  loading: "کارشناس بارگیری",
+  admin: "مدیر سامانه",
+};
+
+const STATUS = {
+  draft_sales: "در انتظار بررسی کارشناس فروش",
+  proforma_sent: "پیش‌فاکتور صادر شده — در انتظار جایگاه‌دار",
+  returned_station: "عودت به جایگاه‌دار جهت اصلاح",
+  pending_accounting: "در انتظار تایید مالی",
+  finance_ok: "تایید مالی — در انتظار ارسال به مدیر فروش",
+  finance_no: "عدم تایید مالی",
+  pending_sales_mgr: "در انتظار تایید مدیر فروش",
+  pending_loading: "در انتظار بارگیری",
+  loaded: "بارگیری انجام شد",
+  rejected: "رد شده",
+};
+
+const SETTLE_STATUS = {
+  pending_sales: "در انتظار بررسی کارشناس فروش",
+  pending_finance: "در انتظار تایید مدیر مالی",
+  approved: "تایید شده — ارسال به جایگاه، بازرگانی و فروش",
+  rejected: "رد شده",
+};
+
+function now() {
+  return new Date().toLocaleString("fa-IR");
+}
+function num(n) {
+  return Number(n || 0).toLocaleString("en-US");
+}
+function rial(n) {
+  return num(n) + " ریال";
+}
+function toman(n) {
+  return rial(n);
+}
+function liter(n) {
+  return num(n) + " لیتر";
+}
+function uid() {
+  return "R" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
+}
+function parseMoney(s) {
+  return Number(String(s || "").replace(/,/g, "").replace(/[^\d.]/g, "")) || 0;
+}
+function attachComma(el) {
+  if (!el) return;
+  el.addEventListener("input", () => {
+    const n = parseMoney(el.value);
+    el.value = n ? n.toLocaleString("en-US") : "";
+  });
+}
+
+function badgeOf(station) {
+  if (station.creditScore === "gold") return { cls: "b-gold", dot: "gold", label: "طلایی — خوش‌حساب و خوش‌فروش" };
+  if (station.creditScore === "silver") return { cls: "b-silver", dot: "silver", label: "نقره‌ای — متوسط" };
+  return { cls: "b-red", dot: "red", label: "قرمز — بدحساب" };
+}
+
+function seed() {
+  const stations = [
+    {
+      id: "st1",
+      name: "جایگاه امام علی (ع) ۲ — اصفهان",
+      city: "اصفهان",
+      user: "station1",
+      contractStart: "1404/06/01",
+      contractEnd: "1405/06/01",
+      guaranteeToman: 20000000000,
+      settledToman: 2000000000,
+      lastSettlementDate: "1405/06/01",
+      extraOrderLiters: 0,
+      remainingLitersOnSite: 4200,
+      creditScore: "gold",
+    },
+    {
+      id: "st2",
+      name: "جایگاه امیرکبیر ۲ — کاشان",
+      city: "کاشان",
+      user: "station2",
+      contractStart: "1404/04/15",
+      contractEnd: "1405/04/15",
+      guaranteeToman: 8000000000,
+      settledToman: 500000000,
+      lastSettlementDate: "1405/05/20",
+      extraOrderLiters: 1500,
+      remainingLitersOnSite: 900,
+      creditScore: "silver",
+    },
+    {
+      id: "st3",
+      name: "جایگاه هادی‌نیا — شهربابک",
+      city: "شهربابک",
+      user: "station3",
+      contractStart: "1404/02/01",
+      contractEnd: "1404/12/01",
+      guaranteeToman: 4000000000,
+      settledToman: 0,
+      lastSettlementDate: "",
+      extraOrderLiters: 0,
+      remainingLitersOnSite: 200,
+      creditScore: "red",
+    },
+  ];
+  const users = [
+    { username: "station1", pass: "1234", role: "station", stationId: "st1", name: "مدیر جایگاه امام علی" },
+    { username: "station2", pass: "1234", role: "station", stationId: "st2", name: "مدیر جایگاه امیرکبیر" },
+    { username: "station3", pass: "1234", role: "station", stationId: "st3", name: "مدیر جایگاه هادی‌نیا" },
+    { username: "sales", pass: "1234", role: "sales", name: "کارشناس فروش لینکس‌اویل" },
+    { username: "acc", pass: "1234", role: "accounting", name: "مدیر مالی" },
+    { username: "smgr", pass: "1234", role: "salesManager", name: "مدیر فروش" },
+    { username: "commerce", pass: "1234", role: "commerce", name: "مدیر بازرگانی" },
+    { username: "load", pass: "1234", role: "loading", name: "کارشناس بارگیری" },
+    { username: "admin", pass: "1234", role: "admin", name: "مدیر سامانه" },
+  ];
+  return { users, stations, requests: [demoRequest("st1", "loaded")], settlements: [], session: null };
+}
+
+function demoRequest(stId, status) {
+  const liters = 8000;
+  const amount = liters * PRICE_PER_LITER;
+  return {
+    id: "RDEMO01",
+    stationId: stId,
+    createdAt: now(),
+    liters,
+    remainingOnSite: 4200,
+    extraOrderLiters: 0,
+    cashBeforeShip: 0,
+    lastSettlementDate: "1405/06/01",
+    status,
+    salesNote: "مطابقت ضمانت تایید شد",
+    financeNote: "تاییدیه مالی صادر شد",
+    financeOk: true,
+    driver: "علی رضایی",
+    plate: "12 ع 345 ایران 78",
+    truck: "تانکر ولوو — ظرفیت 20000 لیتر",
+    loadTime: "1405/06/07 ساعت 08:30",
+    loadLiters: 8000,
+    loadInvoiceName: "فاکتور-بارگیری-RDEMO01.pdf",
+    proforma: { liters, unit: PRICE_PER_LITER, total: amount, no: "PF-1405-001", date: now() },
+    logs: [
+      { t: now(), by: "جایگاه‌دار", msg: "ثبت درخواست خرید" },
+      { t: now(), by: "کارشناس فروش", msg: "صدور پیش‌فاکتور خودکار" },
+      { t: now(), by: "مدیر مالی", msg: "تاییدیه مالی" },
+      { t: now(), by: "مدیر فروش", msg: "تایید و ارسال به بارگیری" },
+      { t: now(), by: "کارشناس بارگیری", msg: "بارگیری انجام و فاکتور پیوست شد" },
+    ],
+  };
+}
+
+function load() {
+  const raw = localStorage.getItem(STORAGE);
+  if (!raw) {
+    const d = seed();
+    save(d);
+    return d;
+  }
+  try {
+    const d = JSON.parse(raw);
+    d.settlements = d.settlements || [];
+    d.requests = d.requests || [];
+    return d;
+  } catch {
+    const d = seed();
+    save(d);
+    return d;
+  }
+}
+function save(db) {
+  localStorage.setItem(STORAGE, JSON.stringify(db));
+}
+
+let db = load();
+let page = "dash";
+let selectedId = null;
+
+function remainingCredit(st) {
+  const maxOrder = Number(st.guaranteeToman || 0) / 2;
+  return Math.max(0, maxOrder - usedCredit(st) + Number(st.settledToman || 0));
+}
+function usedCredit(st) {
+  return db.requests
+    .filter((r) => r.stationId === st.id && r.status !== "rejected" && r.status !== "loaded")
+    .reduce((s, r) => s + Math.max(0, r.liters * PRICE_PER_LITER - (r.cashBeforeShip || 0)), 0);
+}
+function stationById(id) {
+  return db.stations.find((s) => s.id === id);
+}
+function me() {
+  return db.session;
+}
+function lastSettleOf(st) {
+  const list = (db.settlements || []).filter((s) => s.stationId === st.id && s.status === "approved");
+  if (!list.length) return st.lastSettlementDate || "—";
+  list.sort((a, b) => String(a.payDate).localeCompare(String(b.payDate)));
+  return list[list.length - 1].payDate;
+}
+
+function render() {
+  const app = document.getElementById("app");
+  if (!db.session) {
+    app.innerHTML = loginView();
+    bindLogin();
+    return;
+  }
+  app.innerHTML = shell();
+  bindApp();
+}
+
+function loginView() {
+  return `<div class="login-wrap"><div class="login-scene" dir="ltr">
+    <img class="login-mascot" src="lynx-lean.png" alt="کاراکتر LYNX OIL" />
+    <div class="login-card" dir="rtl">
+      <div class="logo-row">
+        <img class="logo-lynx" src="logo-lynx.jpg" alt="LYNX OIL" />
+        <img class="logo-msp" src="logo-msp.jpg" alt="MSP" />
+      </div>
+      <div class="brand"><div><strong>LYNX OIL CRM</strong><div class="muted">سامانه سفارش بنزین سوپر وارداتی</div></div></div>
+      <h1>ورود به پنل</h1>
+      <p class="sub">جایگاه‌داران و کارشناسان با حساب تعریف‌شده وارد می‌شوند.</p>
+      <label>نام کاربری</label><input id="u" autocomplete="username" />
+      <label>رمز عبور</label><input id="p" type="password" autocomplete="current-password" />
+      <button class="btn btn-gold" id="go">ورود</button>
+      <div class="hint">نمونه‌ها (رمز همه: 1234)<br>
+        station1 / station2 / station3 — جایگاه<br>
+        sales — کارشناس فروش | acc — مالی<br>
+        smgr — مدیر فروش | commerce — بازرگانی<br>
+        load — بارگیری | admin
+      </div>
+    </div>
+  </div></div>`;
+}
+function bindLogin() {
+  document.getElementById("go").onclick = async () => {
+    const u = document.getElementById("u").value.trim();
+    const p = document.getElementById("p").value;
+    if (!u || !p) { alert("نام کاربری و رمز عبور را وارد کنید"); return; }
+    const btn = document.getElementById("go"); btn.disabled = true; btn.textContent = "در حال ورود...";
+    try {
+      const response = await fetch("api.php?action=login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: u, password: p }) });
+      const result = await response.json();
+      if (!result.ok) throw new Error(result.message || "نام کاربری یا رمز عبور نادرست است");
+      const user = result.user;
+      db.apiToken = result.token;
+      db.session = { ...user, name: user.full_name, stationId: user.station_id };
+      if (user.station_id && user.station_name) {
+        const local = stationById(user.station_id);
+        const mapped = { id: user.station_id, name: user.station_name, city: user.station_city || "", guaranteeToman: Number(user.guarantee_rial || 0), settledToman: 0, creditScore: user.credit_score || "silver", contractStart: "—", contractEnd: "—", remainingLitersOnSite: 0 };
+        if (local) Object.assign(local, mapped); else db.stations.push(mapped);
+      }
+      save(db);
+      if (user.role === "admin") { window.location.href = "admin-users.html"; return; }
+      page = "dash"; render();
+    } catch (e) {
+      alert(e.message || "نام کاربری یا رمز عبور نادرست است");
+      btn.disabled = false; btn.textContent = "ورود";
+    }
+  };
+}
+
+function navItems() {
+  const r = me().role;
+  const items = [{ id: "dash", t: "داشبورد" }];
+  if (r === "station")
+    items.push({ id: "new", t: "درخواست خرید جدید" }, { id: "settle", t: "فرم تسویه فروش" }, { id: "mine", t: "درخواست‌های من" }, { id: "hist", t: "سوابق جایگاه" });
+  if (r === "sales" || r === "admin")
+    items.push({ id: "inbox", t: "صندوق کارشناس فروش" }, { id: "settleInbox", t: "تسویه‌های فروش" }, { id: "stations", t: "جایگاه‌ها" }, { id: "finance", t: "اطلاعات مالی جایگاه‌ها" });
+  if (r === "accounting" || r === "admin")
+    items.push({ id: "acc", t: "تایید مالی سفارش" }, { id: "settleAcc", t: "تایید تسویه مالی" });
+  if (r === "salesManager" || r === "admin") items.push({ id: "sm", t: "تایید مدیر فروش" });
+  if (r === "commerce" || r === "admin") items.push({ id: "settleCom", t: "تسویه‌های تاییدشده" });
+  if (r === "loading" || r === "admin") items.push({ id: "load", t: "بارگیری" });
+  if (r === "admin") items.push({ id: "users", t: "کاربران" });
+  return items;
+}
+
+function shell() {
+  const items = navItems()
+    .map((i) => `<button class="nav-btn ${page === i.id ? "active" : ""}" data-p="${i.id}">${i.t}</button>`)
+    .join("");
+  return `<div class="app">
+    <aside class="side">
+      <div class="brand" style="flex-wrap:wrap">
+        <img class="logo-lynx-sm" src="logo-lynx.jpg" alt="LYNX OIL" />
+        <div><strong>LYNX OIL</strong><div class="muted" style="font-size:11px">CRM سفارش سوپر</div></div>
+        <img class="logo-msp-sm" src="logo-msp.jpg" alt="MSP" />
+      </div>
+      ${items}
+      <div style="flex:1"></div>
+      <button class="nav-btn" id="out">خروج</button>
+    </aside>
+    <main class="main">
+      <div class="topbar">
+        <div><h2>${titleOf()}</h2><div class="muted">lynxoil.ir — بنزین سوپر وارداتی اکتان 95+</div></div>
+        <div class="user-chip">${me().name} · ${ROLES[me().role]}</div>
+      </div>
+      ${pageBody()}
+    </main>
+  </div>`;
+}
+function titleOf() {
+  const m = {
+    dash: "داشبورد",
+    new: "ثبت درخواست خرید",
+    settle: "فرم تسویه فروش",
+    mine: "درخواست‌های من",
+    hist: "سوابق کامل جایگاه",
+    inbox: "بررسی درخواست‌ها",
+    settleInbox: "تسویه‌های فروش",
+    stations: "مدیریت جایگاه‌ها",
+    acc: "تاییدیه‌های مالی سفارش",
+    settleAcc: "تایید تسویه مالی",
+    sm: "تایید مدیر فروش",
+    settleCom: "تسویه‌های تاییدشده",
+    load: "کارشناس بارگیری",
+    users: "کاربران",
+    finance: "اطلاعات مالی جایگاه‌ها",
+  };
+  return m[page] || "پنل";
+}
+
+function pageBody() {
+  if (page === "dash") return dash();
+  if (page === "new") return newReq();
+  if (page === "settle") return settleForm();
+  if (page === "settleInbox" || page === "settleAcc" || page === "settleCom") return settleList();
+  if (page === "mine" || page === "inbox" || page === "acc" || page === "sm" || page === "load") return listPage();
+  if (page === "hist") return hist();
+  if (page === "stations") return stationsPage();
+  if (page === "users") return usersPage();
+  if (page === "finance") return financePage();
+  return "";
+}
+
+function dash() {
+  const r = me().role;
+  if (r === "station") {
+    const st = stationById(me().stationId);
+    const b = badgeOf(st);
+    const rem = remainingCredit(st);
+    const maxO = st.guaranteeToman / 2;
+    const my = db.requests.filter((x) => x.stationId === st.id);
+    return `<div class="grid kpis">
+      <div class="card kpi"><div class="lbl">اعتبار مالی باقی‌مانده</div><div class="val ok">${rial(rem)}</div>
+        <div class="muted">سقف سفارش = نصف ضمانت (${rial(maxO)})</div></div>
+      <div class="card kpi"><div class="lbl">مبلغ ضمانت‌نامه (چک بانکی)</div><div class="val">${rial(st.guaranteeToman)}</div>
+        <div class="muted">آخرین تاریخ تسویه: ${lastSettleOf(st)} · هر ${SETTLE_DAYS} روز</div></div>
+      <div class="card kpi"><div class="lbl">وضعیت اعتباری جایگاه</div><div class="val"><span class="badge ${b.cls}"><span class="dot ${b.dot}"></span>${b.label}</span></div>
+        <div class="muted">قرارداد: ${st.contractStart} تا ${st.contractEnd}</div></div>
+      <div class="card kpi"><div class="lbl">قیمت هر لیتر</div><div class="val">${rial(PRICE_PER_LITER)}</div></div>
+    </div>
+    <div class="card" style="margin-top:16px"><h3>آخرین درخواست‌ها</h3>${reqTable(my)}</div>`;
+  }
+  const pending = db.requests.filter((x) => x.status !== "loaded" && x.status !== "rejected");
+  return `<div class="grid kpis">
+    <div class="card kpi"><div class="lbl">درخواست‌های باز</div><div class="val">${num(pending.length)}</div></div>
+    <div class="card kpi"><div class="lbl">جایگاه‌های فعال</div><div class="val">${num(db.stations.length)}</div></div>
+    <div class="card kpi"><div class="lbl">قیمت هر لیتر</div><div class="val">${rial(PRICE_PER_LITER)}</div></div>
+  </div>
+  <div class="card" style="margin-top:16px">${reqTable(db.requests)}</div>`;
+}
+
+function reqTable(list) {
+  if (!list.length) return `<p class="muted" style="margin-top:10px">موردی نیست.</p>`;
+  return `<table><thead><tr><th>کد</th><th>جایگاه</th><th>لیتر</th><th>مبلغ</th><th>وضعیت</th><th></th></tr></thead><tbody>
+    ${list
+      .slice()
+      .reverse()
+      .map((x) => {
+        const st = stationById(x.stationId);
+        const b = badgeOf(st);
+        return `<tr>
+        <td>${x.id}</td>
+        <td>${st.name} <span class="dot ${b.dot}" title="${b.label}"></span></td>
+        <td>${liter(x.liters)}</td>
+        <td>${rial(x.liters * PRICE_PER_LITER)}</td>
+        <td><span class="status">${STATUS[x.status] || x.status}</span></td>
+        <td><button class="btn btn-ghost" data-open="${x.id}">مشاهده</button></td>
+      </tr>`;
+      })
+      .join("")}
+  </tbody></table>`;
+}
+
+function newReq() {
+  const st = stationById(me().stationId);
+  const rem = remainingCredit(st);
+  const b = badgeOf(st);
+  return `<div class="card">
+    <div class="row">
+      <div><strong>${st.name}</strong><div class="muted">قرارداد ${st.contractStart} تا ${st.contractEnd}</div></div>
+      <div><span class="badge ${b.cls}"><span class="dot ${b.dot}"></span>${b.label}</span></div>
+    </div>
+    <p class="muted" style="margin:12px 0">طبق قرارداد هر ${SETTLE_DAYS} روز باید بخشی از بدهی از طریق فرم تسویه فروش پرداخت شود. آخرین تاریخ تسویه به‌صورت خودکار از همان فرم می‌آید. مبالغ به ریال است.</p>
+    <div class="grid kpis" style="margin-bottom:12px">
+      <div class="card kpi"><div class="lbl">اعتبار باقی‌مانده</div><div class="val ok">${rial(rem)}</div>
+        <div class="muted">سقف = نصف ضمانت (${rial(st.guaranteeToman / 2)})</div></div>
+      <div class="card kpi"><div class="lbl">آخرین تاریخ تسویه حساب</div><div class="val">${lastSettleOf(st)}</div>
+        <div class="muted">هر ${SETTLE_DAYS} روز یک‌بار الزامی است</div></div>
+    </div>
+    <div class="row">
+      <div><label>آخرین تاریخ تسویه حساب</label><input value="${lastSettleOf(st)}" disabled /></div>
+      <div><label>مبلغ واریزی (ریال)</label><input id="deposit" type="text" inputmode="numeric" placeholder="50,000,000" /></div>
+    </div>
+    <div class="row">
+      <div><label>مقدار درخواستی جدید (لیتر)</label><input id="liters" type="number" value="5000" /></div>
+      <div></div>
+    </div>
+    <p class="muted" id="est"></p>
+    <div class="actions"><button class="btn btn-gold" id="submitReq" style="width:auto">ثبت و ارسال به کارشناس فروش</button></div>
+  </div>`;
+}
+
+function settleForm() {
+  const st = stationById(me().stationId);
+  const mine = (db.settlements || []).filter((s) => s.stationId === st.id);
+  return `<div class="card">
+    <h3>فرم تسویه فروش</h3>
+    <p class="muted">طبق قرارداد هر ${SETTLE_DAYS} روز بخشی از بدهی تسویه شود. مسیر: کارشناس فروش سپس مدیر مالی. پس از تایید برای جایگاه‌دار، مدیر بازرگانی و کارشناس فروش ارسال می‌شود.</p>
+    <p>آخرین تاریخ تسویه (خودکار): <strong>${lastSettleOf(st)}</strong></p>
+    <div class="row">
+      <div><label>میزان فروش (لیتر)</label><input id="svLiters" type="number" /></div>
+      <div><label>مبلغ واریزی (ریال)</label><input id="svAmount" type="text" inputmode="numeric" placeholder="50,000,000" /></div>
+    </div>
+    <div class="row">
+      <div><label>تاریخ واریز</label><input id="svDate" placeholder="1405/06/07" /></div>
+      <div><label>پیوست فیش واریز</label><input id="svFile" type="file" accept="image/*,.pdf" /></div>
+    </div>
+    <div class="actions"><button class="btn btn-gold" id="submitSettle" style="width:auto">ارسال به کارشناس فروش</button></div>
+  </div>
+  <div class="card" style="margin-top:14px"><h3>سوابق تسویه</h3>${settleTable(mine)}</div>`;
+}
+
+function settleTable(list) {
+  if (!list.length) return `<p class="muted">موردی نیست.</p>`;
+  return `<table><thead><tr><th>کد</th><th>جایگاه</th><th>فروش</th><th>مبلغ واریزی</th><th>تاریخ واریز</th><th>فیش</th><th>وضعیت</th><th></th></tr></thead><tbody>
+    ${list
+      .slice()
+      .reverse()
+      .map((s) => {
+        const st = stationById(s.stationId);
+        return `<tr>
+        <td>${s.id}</td><td>${st.name}</td><td>${liter(s.salesLiters)}</td>
+        <td>${rial(s.amount)}</td><td>${s.payDate}</td>
+        <td>${s.receiptName || "—"}</td>
+        <td><span class="status">${SETTLE_STATUS[s.status]}</span></td>
+        <td><button class="btn btn-ghost" data-sv="${s.id}">مشاهده</button></td>
+      </tr>`;
+      })
+      .join("")}
+  </tbody></table>`;
+}
+
+function settleList() {
+  db.settlements = db.settlements || [];
+  let list = db.settlements;
+  if (me().role === "sales") list = list.filter((s) => s.status === "pending_sales" || s.status === "approved");
+  if (me().role === "accounting") list = list.filter((s) => s.status === "pending_finance" || s.status === "approved");
+  if (me().role === "commerce") list = list.filter((s) => s.status === "approved");
+  if (me().role === "station") list = list.filter((s) => s.stationId === me().stationId);
+  if (selectedId && String(selectedId).startsWith("S")) return settleDetail(selectedId);
+  return `<div class="card">${settleTable(list)}</div>`;
+}
+
+function settleDetail(id) {
+  const s = (db.settlements || []).find((x) => x.id === id);
+  if (!s) return "یافت نشد";
+  const st = stationById(s.stationId);
+  const role = me().role;
+  let actions = `<button class="btn btn-ghost" id="back">بازگشت</button>`;
+  if (role === "sales" && s.status === "pending_sales") {
+    actions += `<button class="btn btn-green" id="svToFin">ارسال به مدیر مالی</button>
+      <button class="btn btn-red" id="svReject">رد</button>`;
+  }
+  if (role === "accounting" && s.status === "pending_finance") {
+    actions += `<button class="btn btn-green" id="svApprove">تایید مالی و ارسال به جایگاه / بازرگانی / فروش</button>
+      <button class="btn btn-red" id="svFinNo">عدم تایید</button>`;
+  }
+  const img =
+    s.receiptData && String(s.receiptData).startsWith("data:image")
+      ? `<img src="${s.receiptData}" style="max-width:360px;border-radius:10px;margin-top:8px" alt="فیش" />`
+      : s.receiptName
+        ? `<p class="file-name">فیش: ${s.receiptName}</p>`
+        : "<p class='muted'>فیش پیوست نشده</p>";
+  return `<div class="card">
+    <h3>${s.id} — ${st.name}</h3>
+    <p class="status">${SETTLE_STATUS[s.status]}</p>
+    <p>میزان فروش: <strong>${liter(s.salesLiters)}</strong></p>
+    <p>مبلغ واریزی: <strong>${rial(s.amount)}</strong></p>
+    <p>تاریخ واریز: <strong>${s.payDate}</strong></p>
+    ${img}
+    <label>توضیحات</label>
+    <textarea id="svNote">${s.note || ""}</textarea>
+    <div class="actions">${actions}</div>
+    <div class="timeline">${(s.logs || []).map((l) => `<div class="tl-item"><strong>${l.by}</strong> — ${l.msg}<br><small>${l.t}</small></div>`).join("")}</div>
+  </div>`;
+}
+
+function listPage() {
+  let list = db.requests;
+  if (page === "mine") list = list.filter((x) => x.stationId === me().stationId);
+  if (page === "inbox") list = list.filter((x) => ["draft_sales", "proforma_sent", "returned_station", "finance_ok", "finance_no"].includes(x.status));
+  if (page === "acc") list = list.filter((x) => x.status === "pending_accounting");
+  if (page === "sm") list = list.filter((x) => x.status === "pending_sales_mgr");
+  if (page === "load") list = list.filter((x) => x.status === "pending_loading" || x.status === "loaded");
+  if (selectedId && !String(selectedId).startsWith("S") && !String(selectedId).startsWith("st")) return detail(selectedId);
+  return `<div class="card">${reqTable(list)}</div>`;
+}
+
+function hist() {
+  const s = stationById(me().role === "station" ? me().stationId : db.stations[0].id);
+  const list = db.requests.filter((x) => x.stationId === s.id);
+  const b = badgeOf(s);
+  return `<div class="card">
+    <h3>${s.name} <span class="badge ${b.cls}"><span class="dot ${b.dot}"></span>${b.label}</span></h3>
+    <p class="muted">قرارداد از ${s.contractStart} تا ${s.contractEnd} · ضمانت ${rial(s.guaranteeToman)} · اعتبار باقی ${rial(remainingCredit(s))} · آخرین تسویه ${lastSettleOf(s)}</p>
+    ${reqTable(list)}
+  </div>`;
+}
+
+function stationsPage() {
+  if (selectedId && String(selectedId).startsWith("st")) return stationEdit(selectedId);
+  return `<div class="card"><table><thead><tr><th>نشان</th><th>جایگاه</th><th>قرارداد</th><th>ضمانت</th><th>اعتبار باقی</th><th></th></tr></thead><tbody>
+    ${db.stations
+      .map((s) => {
+        const b = badgeOf(s);
+        return `<tr>
+        <td><span class="dot ${b.dot}"></span></td>
+        <td>${s.name}</td>
+        <td>${s.contractStart} — ${s.contractEnd}</td>
+        <td>${rial(s.guaranteeToman)}</td>
+        <td>${rial(remainingCredit(s))}</td>
+        <td><button class="btn btn-ghost" data-st="${s.id}">ویرایش</button></td>
+      </tr>`;
+      })
+      .join("")}
+  </tbody></table></div>`;
+}
+
+function stationEdit(id) {
+  const s = stationById(id);
+  return `<div class="card">
+    <h3>ویرایش ${s.name}</h3>
+    <div class="row"><div><label>تاریخ شروع قرارداد</label><input id="cs" value="${s.contractStart}" /></div>
+    <div><label>تاریخ اتمام قرارداد</label><input id="ce" value="${s.contractEnd}" /></div></div>
+    <div class="row"><div><label>مبلغ ضمانت (ریال)</label><input id="g" type="number" value="${s.guaranteeToman}" /></div>
+    <div><label>تسویه تجمعی (ریال)</label><input id="set" type="number" value="${s.settledToman}" /></div></div>
+    <div class="row"><div><label>نشان اعتباری</label>
+      <select id="sc"><option value="gold" ${s.creditScore === "gold" ? "selected" : ""}>طلایی — خوش‌حساب و خوش‌فروش</option>
+      <option value="silver" ${s.creditScore === "silver" ? "selected" : ""}>نقره‌ای — متوسط</option>
+      <option value="red" ${s.creditScore === "red" ? "selected" : ""}>قرمز — بدحساب</option></select></div><div></div></div>
+    <div class="actions"><button class="btn btn-green" id="saveSt">ذخیره</button><button class="btn btn-ghost" id="back">بازگشت</button></div>
+  </div>`;
+}
+
+function usersPage() {
+  return `<div class="card">${db.users.map((u) => `<div style="padding:8px 0;border-bottom:1px solid var(--line)">${u.username} — ${u.name} — ${ROLES[u.role]}</div>`).join("")}</div>`;
+}
+
+function financePage() {
+  return `<div class="card"><h3>اطلاعات مالی جایگاه‌ها</h3><p class="muted">کارشناس فروش اطلاعات آخرین وضعیت مالی و اعتباری هر جایگاه را ثبت می‌کند.</p>
+    <div id="financeMsg" class="muted">در حال بارگذاری جایگاه‌ها...</div>
+    <div class="row3"><div><label>جایگاه</label><select id="fStation"><option value="">در حال بارگذاری...</option></select></div>
+    <div><label>مبلغ ضمانت‌نامه (ریال)</label><input id="fGuarantee" inputmode="numeric"></div>
+    <div><label>مبلغ تسویه‌شده (ریال)</label><input id="fSettled" inputmode="numeric"></div></div>
+    <div class="row3"><div><label>تاریخ آخرین تسویه</label><input id="fLastDate" type="date"></div>
+    <div><label>وضعیت مالی</label><select id="fStatus"><option value="healthy">سالم</option><option value="due">نیازمند تسویه</option><option value="overdue">معوق</option><option value="blocked">مسدود</option><option value="review">در حال بررسی</option></select></div>
+    <div><label>وضعیت اعتباری</label><select id="fCredit"><option value="gold">طلایی</option><option value="silver">نقره‌ای</option><option value="red">قرمز</option></select></div></div>
+    <label>توضیحات کارشناس فروش</label><textarea id="fNote"></textarea>
+    <div class="actions"><button class="btn btn-gold" id="saveFinance" style="width:auto">ذخیره اطلاعات</button></div>
+    <div id="financeTable" style="margin-top:16px"></div></div>`;
+}
+
+function detail(id) {
+  const x = db.requests.find((r) => r.id === id);
+  if (!x) return "یافت نشد";
+  const st = stationById(x.stationId);
+  const b = badgeOf(st);
+  const amount = x.liters * PRICE_PER_LITER;
+  const allowed = st.guaranteeToman / 2;
+  const gap = Math.max(0, amount - (x.cashBeforeShip || 0) - allowed);
+  const role = me().role;
+  let actions = `<button class="btn btn-ghost" id="back">بازگشت</button>`;
+
+  if (role === "sales" && x.status === "draft_sales") {
+    actions += `<button class="btn btn-green" id="autoPf">صدور پیش‌فاکتور خودکار و ارسال به جایگاه</button>
+      <button class="btn btn-blue" id="cutLiters">کاهش مقدار بنزین درخواستی</button>`;
+  }
+  if (role === "station" && (x.status === "proforma_sent" || x.status === "returned_station" || x.status === "finance_no")) {
+    actions += `<button class="btn btn-green" id="stResub">ارسال مجدد با راننده و پلاک</button>`;
+  }
+  if (role === "sales" && x.status === "proforma_sent" && x.driver) {
+    actions += `<button class="btn btn-green" id="toAcc">ارسال به مدیر مالی</button>
+      <button class="btn btn-red" id="backSt">عودت به جایگاه با توضیح</button>`;
+  }
+  if (role === "accounting" && x.status === "pending_accounting") {
+    actions += `<button class="btn btn-green" id="finOk">تاییدیه مالی</button>
+      <button class="btn btn-red" id="finNo">عدم تایید مالی</button>`;
+  }
+  if (role === "sales" && x.status === "finance_ok") {
+    actions += `<button class="btn btn-green" id="toSm">ارسال به مدیر فروش</button>`;
+  }
+  if (role === "sales" && x.status === "finance_no") {
+    actions += `<button class="btn btn-blue" id="toStFin">ارسال به جایگاه‌دار با توضیحات مالی</button>`;
+  }
+  if (role === "salesManager" && x.status === "pending_sales_mgr") {
+    actions += `<button class="btn btn-green" id="smOk">تایید و ارسال به بارگیری</button>`;
+  }
+  if (role === "loading" && x.status === "pending_loading") {
+    actions += `<button class="btn btn-green" id="doLoad">ثبت بارگیری و پیوست فاکتور</button>`;
+  }
+
+  const pf = x.proforma
+    ? `<div class="invoice" id="pf">
+    <div class="invoice-logos">
+      <img src="logo-lynx.jpg" alt="LYNX OIL" style="background:#000;padding:6px;border-radius:8px;height:56px" />
+      <img src="logo-msp.jpg" alt="MSP" style="height:56px" />
+    </div>
+    <h2>پیش‌فاکتور LYNX OIL</h2>
+    <p>شماره ${x.proforma.no} · ${x.proforma.date}</p>
+    <p>خریدار: ${st.name}</p>
+    <table><tr><td>بنزین سوپر وارداتی اکتان 95+</td><td>${liter(x.proforma.liters)}</td><td>${rial(x.proforma.unit)} / لیتر</td><td>${rial(x.proforma.total)}</td></tr></table>
+    <p>این سند به‌صورت خودکار صادر شده است.</p>
+  </div>`
+    : `<p class="muted">پیش‌فاکتور هنوز صادر نشده.</p>`;
+
+  return `<div class="card">
+    <h3>${x.id} — ${st.name} <span class="badge ${b.cls}"><span class="dot ${b.dot}"></span>${b.label}</span></h3>
+    <p class="status">${STATUS[x.status]}</p>
+    <div class="row3" style="margin-top:12px">
+      <div>مقدار درخواستی: <strong>${liter(x.liters)}</strong></div>
+      <div>مبلغ: <strong>${rial(amount)}</strong></div>
+      <div>مبلغ واریزی: <strong>${rial(x.cashBeforeShip || 0)}</strong></div>
+      <div>آخرین تاریخ تسویه: ${x.lastSettlementDate || lastSettleOf(st)}</div>
+    </div>
+    <p class="${gap > 0 ? "warn" : "ok"}" style="margin:10px 0">${
+      gap > 0
+        ? "میزان ضمانت از مبلغ درخواستی کمتر است. کارشناس فروش می‌تواند مقدار را کم کند."
+        : "میزان ضمانت با مقدار بنزین درخواستی مطابقت دارد."
+    }</p>
+    ${x.driver ? `<p>راننده: ${x.driver} · پلاک: ${x.plate} · ماشین: ${x.truck}</p>` : ""}
+    ${x.loadTime ? `<p>ساعت بارگیری: ${x.loadTime} · مقدار: ${liter(x.loadLiters)} · فاکتور: ${x.loadInvoiceName || "—"}</p>` : ""}
+    <label>یادداشت / علت عدم صحت</label>
+    <textarea id="note">${x.salesNote || ""}</textarea>
+    ${
+      role === "station" && (x.status === "proforma_sent" || x.status === "returned_station" || x.status === "finance_no")
+        ? `
+      <div class="row3">
+        <div><label>کاهش لیتر (اختیاری)</label><input id="newL" type="number" value="${x.liters}" /></div>
+        <div><label>راننده</label><input id="drv" value="${x.driver || ""}" /></div>
+        <div><label>پلاک</label><input id="plt" value="${x.plate || ""}" /></div>
+      </div>
+      <label>ماشین حمل</label><input id="trk" value="${x.truck || ""}" />
+    `
+        : ""
+    }
+    ${
+      role === "loading" && x.status === "pending_loading"
+        ? `
+      <div class="row3">
+        <div><label>ساعت بارگیری</label><input id="lt" value="${new Date().toLocaleString("fa-IR")}" /></div>
+        <div><label>مقدار بارگیری (لیتر)</label><input id="ll" type="number" value="${x.liters}" /></div>
+        <div><label>پیوست فاکتور بارگیری</label><input id="lf" type="file" accept=".pdf,image/*" /></div>
+      </div>
+    `
+        : ""
+    }
+    <div class="actions">${actions}</div>
+    <h4 style="margin:18px 0 8px">پیش‌فاکتور خودکار</h4>
+    ${pf}
+    <h4 style="margin:18px 0 8px">گردش کار</h4>
+    <div class="timeline">${(x.logs || []).map((l) => `<div class="tl-item"><strong>${l.by}</strong> — ${l.msg}<br><small>${l.t}</small></div>`).join("")}</div>
+  </div>`;
+}
+
+function log(x, msg) {
+  x.logs = x.logs || [];
+  x.logs.push({ t: now(), by: me().name, msg });
+}
+
+function bindApp() {
+  document.querySelectorAll("[data-p]").forEach((b) => (b.onclick = () => { page = b.dataset.p; selectedId = null; render(); }));
+  document.getElementById("out").onclick = () => { db.session = null; save(db); render(); };
+  document.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => { selectedId = b.dataset.open; render(); }));
+  document.querySelectorAll("[data-sv]").forEach((b) => (b.onclick = () => { selectedId = b.dataset.sv; render(); }));
+  document.querySelectorAll("[data-st]").forEach((b) => (b.onclick = () => { selectedId = b.dataset.st; render(); }));
+  const back = document.getElementById("back");
+  if (back) back.onclick = () => { selectedId = null; render(); };
+  attachComma(document.getElementById("deposit"));
+  attachComma(document.getElementById("svAmount"));
+
+  const est = document.getElementById("est");
+  const litersI = document.getElementById("liters");
+  if (litersI) {
+    const upd = () => {
+      const L = +litersI.value || 0;
+      est.textContent = "مبلغ سفارش " + rial(L * PRICE_PER_LITER);
+    };
+    litersI.oninput = upd;
+    upd();
+    document.getElementById("submitReq").onclick = () => {
+      const st = stationById(me().stationId);
+      const liters = +document.getElementById("liters").value;
+      const deposit = parseMoney((document.getElementById("deposit") || {}).value);
+      db.requests.push({
+        id: uid(),
+        stationId: st.id,
+        createdAt: now(),
+        liters,
+        remainingOnSite: st.remainingLitersOnSite || 0,
+        extraOrderLiters: 0,
+        cashBeforeShip: deposit,
+        lastSettlementDate: lastSettleOf(st),
+        status: "draft_sales",
+        logs: [{ t: now(), by: me().name, msg: "ثبت درخواست خرید — مبلغ واریزی " + rial(deposit) }],
+      });
+      save(db);
+      alert("درخواست برای کارشناس فروش ارسال شد.");
+      page = "mine";
+      render();
+    };
+  }
+
+  const submitSettle = document.getElementById("submitSettle");
+  if (submitSettle) {
+    submitSettle.onclick = () => {
+      const st = stationById(me().stationId);
+      const amount = parseMoney(document.getElementById("svAmount").value);
+      const payDate = document.getElementById("svDate").value.trim();
+      const salesLiters = +document.getElementById("svLiters").value || 0;
+      if (!amount || !payDate) {
+        alert("مبلغ واریزی و تاریخ واریز الزامی است");
+        return;
+      }
+      const file = document.getElementById("svFile").files[0];
+      const finish = (receiptName, receiptData) => {
+        db.settlements = db.settlements || [];
+        db.settlements.push({
+          id: "S" + uid().slice(1),
+          stationId: st.id,
+          salesLiters,
+          amount,
+          payDate,
+          receiptName: receiptName || "",
+          receiptData: receiptData || "",
+          status: "pending_sales",
+          note: "",
+          logs: [{ t: now(), by: me().name, msg: "ثبت فرم تسویه فروش و ارسال به کارشناس فروش" }],
+        });
+        save(db);
+        alert("فرم تسویه برای کارشناس فروش ارسال شد.");
+        render();
+      };
+      if (file) {
+        const r = new FileReader();
+        r.onload = () => finish(file.name, r.result);
+        r.readAsDataURL(file);
+      } else finish("", "");
+    };
+  }
+
+  const saveSt = document.getElementById("saveSt");
+  if (saveSt)
+    saveSt.onclick = () => {
+      const s = stationById(selectedId);
+      s.contractStart = document.getElementById("cs").value;
+      s.contractEnd = document.getElementById("ce").value;
+      s.guaranteeToman = +document.getElementById("g").value;
+      s.settledToman = +document.getElementById("set").value;
+      s.creditScore = document.getElementById("sc").value;
+      save(db);
+      selectedId = null;
+      render();
+    };
+
+  if (page === "finance") bindFinance();
+  wireActions();
+}
+
+async function apiCall(action, method = "GET", data = null) {
+  const headers = { "Content-Type": "application/json" };
+  if (db.apiToken) headers.Authorization = "Bearer " + db.apiToken;
+  const res = await fetch("api.php?action=" + action, { method, headers, body: data ? JSON.stringify(data) : undefined });
+  const text = await res.text();
+  let out; try { out = JSON.parse(text); } catch { throw new Error("پاسخ نامعتبر از سرور — HTTP " + res.status); }
+  if (!out.ok) throw new Error(out.message || "خطای سرور");
+  return out;
+}
+
+async function bindFinance() {
+  const stationSelect = document.getElementById("fStation");
+  const table = document.getElementById("financeTable");
+  const message = document.getElementById("financeMsg");
+  const statusText = { healthy: "سالم", due: "نیازمند تسویه", overdue: "معوق", blocked: "مسدود", review: "در حال بررسی" };
+  const creditText = { gold: "طلایی", silver: "نقره‌ای", red: "قرمز" };
+  let items = [];
+  const moneyValue = (v) => Number(v || 0).toLocaleString("en-US");
+  const rawMoney = (v) => String(v || "").replace(/,/g, "").replace(/[^0-9]/g, "");
+  const fill = () => {
+    stationSelect.innerHTML = `<option value="">انتخاب جایگاه</option>` + items.map((s) => `<option value="${s.id}">${s.name} — ${s.city}</option>`).join("");
+    table.innerHTML = items.length ? `<table><thead><tr><th>جایگاه</th><th>ضمانت</th><th>وضعیت مالی</th><th>اعتبار</th><th>آخرین تغییر</th></tr></thead><tbody>${items.map((s) => `<tr><td>${s.name} — ${s.city}</td><td>${moneyValue(s.guarantee_rial)} ریال</td><td><span class="status">${statusText[s.financial_status] || s.financial_status}</span></td><td>${creditText[s.credit_score] || s.credit_score}</td><td>${s.financial_updated_at || "—"}</td></tr>`).join("")}</tbody></table>` : `<p class="muted">جایگاهی ثبت نشده است.</p>`;
+  };
+  const edit = (s) => { stationSelect.value = s.id; document.getElementById("fGuarantee").value = moneyValue(s.guarantee_rial); document.getElementById("fSettled").value = moneyValue(s.settled_rial); document.getElementById("fLastDate").value = s.last_settlement_date || ""; document.getElementById("fStatus").value = s.financial_status || "review"; document.getElementById("fCredit").value = s.credit_score || "silver"; document.getElementById("fNote").value = s.sales_note || ""; };
+  try { items = (await apiCall("station_finance_list")).items; fill(); stationSelect.onchange = () => { const s = items.find((x) => String(x.id) === stationSelect.value); if (s) edit(s); }; document.getElementById("saveFinance").onclick = async () => { try { const s = items.find((x) => String(x.id) === stationSelect.value); if (!s) throw new Error("ابتدا یک جایگاه را انتخاب کنید."); await apiCall("station_finance_update", "POST", { station_id: s.id, guarantee_rial: rawMoney(document.getElementById("fGuarantee").value), settled_rial: rawMoney(document.getElementById("fSettled").value), last_settlement_date: document.getElementById("fLastDate").value, financial_status: document.getElementById("fStatus").value, credit_score: document.getElementById("fCredit").value, sales_note: document.getElementById("fNote").value }); message.textContent = "اطلاعات با موفقیت ذخیره شد."; message.className = "ok"; items = (await apiCall("station_finance_list")).items; fill(); edit(items.find((x) => +x.id === +s.id)); } catch (e) { message.textContent = e.message; message.className = "err"; } }; } catch (e) { message.textContent = e.message; message.className = "err"; }
+}
+
+function getReq() {
+  return db.requests.find((r) => r.id === selectedId);
+}
+
+function wireActions() {
+  const x = selectedId && getReq();
+  const note = () => (document.getElementById("note") || {}).value || "";
+
+  const autoPf = document.getElementById("autoPf");
+  if (autoPf)
+    autoPf.onclick = () => {
+      x.salesNote = note();
+      x.proforma = { liters: x.liters, unit: PRICE_PER_LITER, total: x.liters * PRICE_PER_LITER, no: "PF-" + x.id, date: now() };
+      x.status = "proforma_sent";
+      log(x, "پیش‌فاکتور به‌صورت خودکار صادر و برای جایگاه‌دار ارسال شد");
+      save(db);
+      render();
+    };
+  const cut = document.getElementById("cutLiters");
+  if (cut)
+    cut.onclick = () => {
+      const n = prompt("مقدار لیتر جدید:", x.liters);
+      if (!n) return;
+      x.liters = +n;
+      log(x, "مقدار بنزین درخواستی به " + n + " لیتر کاهش یافت");
+      save(db);
+      render();
+    };
+  const stResub = document.getElementById("stResub");
+  if (stResub)
+    stResub.onclick = () => {
+      x.liters = +document.getElementById("newL").value;
+      x.driver = document.getElementById("drv").value;
+      x.plate = document.getElementById("plt").value;
+      x.truck = document.getElementById("trk").value;
+      if (!x.driver || !x.plate) {
+        alert("راننده و پلاک الزامی است");
+        return;
+      }
+      x.status = "proforma_sent";
+      log(x, "جایگاه‌دار اطلاعات راننده و پلاک را ثبت کرد");
+      save(db);
+      alert("برای کارشناس فروش ارسال شد");
+      render();
+    };
+  const toAcc = document.getElementById("toAcc");
+  if (toAcc)
+    toAcc.onclick = () => {
+      x.status = "pending_accounting";
+      log(x, "به مدیر مالی ارسال شد");
+      save(db);
+      selectedId = null;
+      render();
+    };
+  const backSt = document.getElementById("backSt");
+  if (backSt)
+    backSt.onclick = () => {
+      x.salesNote = note();
+      if (!x.salesNote) {
+        alert("علت عدم صحت را بنویسید");
+        return;
+      }
+      x.status = "returned_station";
+      log(x, "عودت به جایگاه: " + x.salesNote);
+      save(db);
+      render();
+    };
+  const finOk = document.getElementById("finOk");
+  if (finOk)
+    finOk.onclick = () => {
+      x.financeOk = true;
+      x.financeNote = note();
+      x.status = "finance_ok";
+      log(x, "تاییدیه مالی صادر شد");
+      save(db);
+      selectedId = null;
+      render();
+    };
+  const finNo = document.getElementById("finNo");
+  if (finNo)
+    finNo.onclick = () => {
+      x.financeOk = false;
+      x.financeNote = note();
+      x.status = "finance_no";
+      log(x, "عدم تایید مالی");
+      save(db);
+      selectedId = null;
+      render();
+    };
+  const toSm = document.getElementById("toSm");
+  if (toSm)
+    toSm.onclick = () => {
+      x.status = "pending_sales_mgr";
+      log(x, "به مدیر فروش ارسال شد");
+      save(db);
+      selectedId = null;
+      render();
+    };
+  const toStFin = document.getElementById("toStFin");
+  if (toStFin)
+    toStFin.onclick = () => {
+      x.status = "returned_station";
+      log(x, "عدم تایید مالی به جایگاه اعلام شد");
+      save(db);
+      render();
+    };
+  const smOk = document.getElementById("smOk");
+  if (smOk)
+    smOk.onclick = () => {
+      x.status = "pending_loading";
+      log(x, "مدیر فروش تایید کرد — ارسال به بارگیری");
+      save(db);
+      selectedId = null;
+      render();
+    };
+  const doLoad = document.getElementById("doLoad");
+  if (doLoad)
+    doLoad.onclick = () => {
+      x.loadTime = document.getElementById("lt").value;
+      x.loadLiters = +document.getElementById("ll").value;
+      const f = document.getElementById("lf").files[0];
+      x.loadInvoiceName = f ? f.name : "فاکتور-بارگیری-" + x.id + ".pdf";
+      x.status = "loaded";
+      log(x, "بارگیری انجام شد و فاکتور برای مدیر فروش، کارشناس فروش و جایگاه‌دار ارسال گردید");
+      save(db);
+      alert("فاکتور بارگیری پیوست شد.");
+      render();
+    };
+
+  const sv = selectedId && (db.settlements || []).find((z) => z.id === selectedId);
+  const svNote = () => (document.getElementById("svNote") || {}).value || "";
+  const svToFin = document.getElementById("svToFin");
+  if (svToFin)
+    svToFin.onclick = () => {
+      sv.note = svNote();
+      sv.status = "pending_finance";
+      sv.logs.push({ t: now(), by: me().name, msg: "بررسی شد و برای مدیر مالی ارسال گردید" });
+      save(db);
+      selectedId = null;
+      render();
+    };
+  const svReject = document.getElementById("svReject");
+  if (svReject)
+    svReject.onclick = () => {
+      sv.note = svNote();
+      sv.status = "rejected";
+      sv.logs.push({ t: now(), by: me().name, msg: "رد شد: " + sv.note });
+      save(db);
+      render();
+    };
+  const svApprove = document.getElementById("svApprove");
+  if (svApprove)
+    svApprove.onclick = () => {
+      sv.note = svNote();
+      sv.status = "approved";
+      const stn = stationById(sv.stationId);
+      stn.lastSettlementDate = sv.payDate;
+      stn.settledToman = (stn.settledToman || 0) + sv.amount;
+      sv.logs.push({ t: now(), by: me().name, msg: "تایید مالی — ارسال به جایگاه‌دار، مدیر بازرگانی و کارشناس فروش" });
+      save(db);
+      selectedId = null;
+      alert("تایید شد و برای جایگاه، بازرگانی و فروش ارسال گردید.");
+      render();
+    };
+  const svFinNo = document.getElementById("svFinNo");
+  if (svFinNo)
+    svFinNo.onclick = () => {
+      sv.note = svNote();
+      sv.status = "rejected";
+      sv.logs.push({ t: now(), by: me().name, msg: "عدم تایید مالی: " + sv.note });
+      save(db);
+      render();
+    };
+}
+
+render();
