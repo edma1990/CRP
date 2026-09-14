@@ -1,0 +1,11 @@
+Options -Indexes
+RewriteEngine On
+
+<FilesMatch "^(config\.php|config\.example\.php|schema\.sql|\.env)$">
+  Require all denied
+</FilesMatch>
+
+# Prevent PHP execution in the upload folder.
+<IfModule mod_headers.c>
+  Header set X-Content-Type-Options "nosniff"
+</IfModule>
